@@ -79,6 +79,7 @@ param serverExternalIngress bool = false
 // ----- Names -----
 
 var storageAccountName = toLower(replace('${namePrefix}st${uniqueString(resourceGroup().id)}', '-', ''))
+var revSuffix          = take(uniqueString(deployment().name, lineaServerImage, lineaWebImage), 12)
 var logWorkspaceName   = '${namePrefix}-logs'
 var vnetName           = '${namePrefix}-vnet'
 var subnetName         = 'aca'
@@ -276,7 +277,7 @@ resource serverApp 'Microsoft.App/containerApps@2025-01-01' = {
       ]
     }
     template: {
-      revisionSuffix: 'v1'
+      revisionSuffix: revSuffix
       containers: [
         {
           name: 'linea-server'
@@ -350,7 +351,7 @@ resource webApp 'Microsoft.App/containerApps@2025-01-01' = {
       )
     }
     template: {
-      revisionSuffix: 'v1'
+      revisionSuffix: revSuffix
       containers: [
         {
           name: 'linea-web'
