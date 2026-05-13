@@ -189,6 +189,42 @@ needs the OIDC issuer + Linea-web app reg values.
 
 3. Re-run **Deploy infra** so `LINEA_OIDC_REDIRECT_URL` in the Container App matches.
 
+### Add "Sign in with Google" (federate Google through Entra ID)
+
+Linea uses a single OIDC issuer (Entra). To offer Google sign-in without
+introducing a second IdP in the app, federate Google as an external identity
+provider in your Entra tenant. Users see "Sign in with Google" on the Entra
+login page; Entra issues the ID token; the BFF and `linea-server` see no
+difference.
+
+1. Create the Google OAuth 2.0 client.
+   - Google Cloud Console → APIs & Services → Credentials → Create credentials → OAuth client ID.
+   - Application type: **Web application**.
+   - Authorized JavaScript origins: `https://login.microsoftonline.com`
+   - Authorized redirect URIs:
+     `https://login.microsoftonline.com/te/<TENANT_ID>/oauth2/authresp`
+   - Copy the generated **Client ID** and **Client secret**.
+
+2. Add Google as an identity provider in Entra.
+   - Microsoft Entra admin center → External Identities → All identity providers → + Google.
+   - Paste the Google Client ID and Client secret. Save.
+
+3. Allow Google users to actually sign in to your app.
+   - Your Linea-web app registration → **Authentication** → ensure "Supported account types" is
+     "Accounts in any organizational directory and personal Microsoft accounts" or use a
+     **user flow** (External Identities → User flows) that includes Google.
+   - For a personal-tenant setup, you typically attach the app to a sign-up/sign-in user flow
+     and set `LINEA_OIDC_ISSUER` to the user-flow issuer URL. For a single-tenant app where
+     Google users are added as guests, no issuer change is needed.
+
+4. Test.
+   - Open `https://<WEB_FQDN>` and click sign in.
+   - On the Entra page, "Sign in with Google" appears alongside the standard sign-in.
+
+No app, BFF, or `linea-server` changes are required. The ID token issuer remains
+your Entra tenant (or the user-flow issuer), `aud` remains the Linea-web client id,
+and signature verification continues to use the discovery JWKS.
+
 ### Subsequent deploys
 
 - Pushing a `v*.*.*` tag to `Linea-server` builds + pushes the image to GHCR and runs
