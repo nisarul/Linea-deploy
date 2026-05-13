@@ -191,7 +191,7 @@ resource webShare 'Microsoft.Storage/storageAccounts/fileServices/shares@2024-01
 
 // ----- Container Apps managed environment (VNet-integrated) -----
 
-resource env 'Microsoft.App/managedEnvironments@2024-03-01' = {
+resource env 'Microsoft.App/managedEnvironments@2025-01-01' = {
   name: envName
   location: location
   properties: {
@@ -219,35 +219,33 @@ resource env 'Microsoft.App/managedEnvironments@2024-03-01' = {
 // key required; access is mediated entirely by the VNet rule on the
 // storage account.
 
-resource serverStorage 'Microsoft.App/managedEnvironments/storages@2024-03-01' = {
+resource serverStorage 'Microsoft.App/managedEnvironments/storages@2025-01-01' = {
   parent: env
   name: serverStorageName
-  // nfsAzureFile is valid ARM but lags in the Bicep type schema for this API
-  // version; any() bypasses the type check without affecting the deployment.
-  properties: any({
+  properties: {
     nfsAzureFile: {
       server: '${storage.name}.file.${environment().suffixes.storage}'
       shareName: '/${storage.name}/${serverShareName}'
       accessMode: 'ReadWrite'
     }
-  })
+  }
 }
 
-resource webStorage 'Microsoft.App/managedEnvironments/storages@2024-03-01' = {
+resource webStorage 'Microsoft.App/managedEnvironments/storages@2025-01-01' = {
   parent: env
   name: webStorageName
-  properties: any({
+  properties: {
     nfsAzureFile: {
       server: '${storage.name}.file.${environment().suffixes.storage}'
       shareName: '/${storage.name}/${webShareName}'
       accessMode: 'ReadWrite'
     }
-  })
+  }
 }
 
 // ----- Linea-server: internal ingress on 8080 -----
 
-resource serverApp 'Microsoft.App/containerApps@2024-03-01' = {
+resource serverApp 'Microsoft.App/containerApps@2025-01-01' = {
   name: serverAppName
   location: location
   properties: {
@@ -316,7 +314,7 @@ resource serverApp 'Microsoft.App/containerApps@2024-03-01' = {
 
 // ----- Linea-web: external ingress on 8090 -----
 
-resource webApp 'Microsoft.App/containerApps@2024-03-01' = {
+resource webApp 'Microsoft.App/containerApps@2025-01-01' = {
   name: webAppName
   location: location
   properties: {
