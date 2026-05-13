@@ -7,3 +7,4 @@ node_modules/
 
 infra/main.json
 
+infra/main.compiled.json
