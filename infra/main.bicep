@@ -152,7 +152,7 @@ resource storage 'Microsoft.Storage/storageAccounts@2024-01-01' = {
   properties: {
     supportsHttpsTrafficOnly: false
     allowSharedKeyAccess: false
-    publicNetworkAccess: 'Disabled'
+    publicNetworkAccess: 'Enabled'
     minimumTlsVersion: 'TLS1_2'
     networkAcls: {
       defaultAction: 'Deny'
