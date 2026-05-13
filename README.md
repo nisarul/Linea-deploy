@@ -11,18 +11,25 @@ Azure infrastructure + GitHub CD pipelines for the Linea ecosystem.
 ## Topology
 
 ```
+linea-vnet (10.0.0.0/16)
+└─ aca subnet (10.0.0.0/23)   delegated to Container Apps,
+                              service endpoint to Microsoft.Storage
+
 resourceGroup (linea-rg)
 ├─ Log Analytics workspace
-├─ Storage account
-│    ├─ file share: server-data  → Linea-server BadgerDB
-│    └─ file share: web-data     → Linea-web BFF sessions
-└─ Container Apps managed env
-   ├─ linea-server  internal ingress :8080   (single replica)
-   └─ linea-web     external ingress :8090   (single replica)
+├─ Premium FileStorage account     public access disabled,
+│    ├─ NFSv4.1 share: server-data  subnet-restricted via service
+│    └─ NFSv4.1 share: web-data     endpoint
+└─ Container Apps managed env      (workload-profiles mode,
+   ├─ linea-server  internal :8080  VNet-integrated)
+   └─ linea-web     external :8090
 ```
 
 - **Single replica per app.** Both apps are stateful: Linea-server keeps a Badger KV per
   genealogy; the Linea-web BFF keeps a Badger session store.
+- **Premium NFSv4.1 storage.** Real POSIX fsync semantics, low latency. The storage
+  account is locked to the Container Apps subnet via a `Microsoft.Storage` service
+  endpoint — there is no public path to the file shares.
 - **Internal traffic.** linea-web's BFF reverse-proxies `/api/*` to `linea-server`'s
   internal Container Apps FQDN — never goes out to the public internet.
 - **Public URL.** Azure's default `<app>.<env>.azurecontainerapps.io` for now. A custom
@@ -191,10 +198,15 @@ az deployment group what-if \
 ## Cost (rough, eu-west, 2026 pricing)
 
 - Container Apps (2 single-replica apps, Consumption profile): ~$15-25 / month at idle.
-- Storage (Standard LRS, ~20 GB files): ~$1 / month.
+- Premium FileStorage (LRS, 2 × 100 GiB provisioned): ~$32 / month.
 - Log Analytics (light traffic): ~$2-5 / month.
+- VNet, service endpoint: free.
 
-≈ **$20-30 / month** for a quiet personal deployment.
+≈ **$50-60 / month** for a quiet personal deployment.
+
+> If you outgrow 100 GiB on either share, the `shareSizeGiB` parameter scales linearly
+> (Premium Files is ~$0.16/GiB/month). You can also halve cost by sharing one 100 GiB
+> share with subpaths, but that's a larger refactor not worth doing until needed.
 
 ## License
 

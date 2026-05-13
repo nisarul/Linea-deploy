@@ -1,34 +1,48 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
-// Linea on Azure — minimum-viable deployment.
+// Linea on Azure — VNet-integrated, Premium NFS file storage.
+//
+// Why this shape:
+//   Linea-server uses BadgerDB; the Linea-web BFF uses BadgerDB for
+//   sessions. Badger requires fsync-safe persistent storage and a
+//   single writer per data directory. Premium Azure Files NFSv4.1
+//   gives us proper POSIX fsync behaviour and low latency.
+//
+//   NFS file shares cannot be exposed to the public internet, so
+//   we VNet-inject the Container Apps environment and restrict the
+//   storage account to that subnet via a service endpoint.
 //
 // Topology:
-//   resourceGroup
-//     ├─ Log Analytics workspace      (for Container Apps logs)
-//     ├─ Storage account              (for Azure Files volumes)
-//     │    ├─ file share: server-data (Linea-server's BadgerDB)
-//     │    └─ file share: web-data    (Linea-web BFF sessions)
-//     ├─ Container Apps managed env   (with both storages attached)
-//     ├─ Container App: linea-server  (internal ingress on 8080)
-//     └─ Container App: linea-web     (external ingress on 8090)
+//   linea-vnet (10.0.0.0/16)
+//     └─ aca subnet (10.0.0.0/23)  delegated to Container Apps
 //
-// Both apps run as single-replica (minReplicas=maxReplicas=1)
-// because Badger is a single-writer KV store. Public traffic
-// hits linea-web only; linea-web's BFF reverse-proxies /api/*
-// to linea-server via its internal FQDN.
+//   resourceGroup
+//     ├─ Log Analytics workspace
+//     ├─ Premium FileStorage account     (public access disabled,
+//     │     ├─ share: server-data 100Gi   subnet-restricted)
+//     │     └─ share: web-data    100Gi
+//     ├─ Container Apps managed env      (workload-profiles mode,
+//     │     ├─ storage: server-data       VNet-integrated)
+//     │     └─ storage: web-data
+//     ├─ Container App: linea-server     (internal :8080, 1 replica)
+//     └─ Container App: linea-web        (external :8090, 1 replica)
+//
+// Both apps run as single-replica because Badger is a single-writer
+// KV store. Public traffic only hits linea-web; linea-web reverse-
+// proxies /api/* to linea-server over the env-internal DNS.
 
 @description('Azure region for all resources.')
 param location string = resourceGroup().location
 
-@description('Prefix used in resource names (lower-case, no dashes for storage).')
+@description('Prefix used in resource names (lower-case).')
 @minLength(3)
 @maxLength(11)
 param namePrefix string = 'linea'
 
-@description('Container image for Linea-server (e.g. ghcr.io/nisarul/linea-server:v0.2.0).')
+@description('Container image for Linea-server.')
 param lineaServerImage string
 
-@description('Container image for Linea-web (e.g. ghcr.io/nisarul/linea-web:v1.0.0).')
+@description('Container image for Linea-web.')
 param lineaWebImage string
 
 @description('Entra ID OIDC issuer URL, e.g. https://login.microsoftonline.com/<tenantId>/v2.0')
@@ -44,7 +58,7 @@ param lineaServerAudience string
 @secure()
 param lineaWebClientSecret string
 
-@description('Image registry server (e.g. ghcr.io). Empty for public images.')
+@description('Image registry server (e.g. ghcr.io). Empty for anonymous public-image pulls.')
 param registryServer string = 'ghcr.io'
 
 @description('Registry username. Empty for anonymous pulls of public images.')
@@ -54,8 +68,17 @@ param registryUsername string = ''
 @secure()
 param registryPassword string = ''
 
+@description('Provisioned size (GiB) of each Premium file share. 100 is the Premium minimum.')
+@minValue(100)
+@maxValue(102400)
+param shareSizeGiB int = 100
+
+// ----- Names -----
+
 var storageAccountName = toLower(replace('${namePrefix}st${uniqueString(resourceGroup().id)}', '-', ''))
 var logWorkspaceName   = '${namePrefix}-logs'
+var vnetName           = '${namePrefix}-vnet'
+var subnetName         = 'aca'
 var envName            = '${namePrefix}-env'
 var serverAppName      = '${namePrefix}-server'
 var webAppName         = '${namePrefix}-web'
@@ -63,6 +86,39 @@ var serverShareName    = 'server-data'
 var webShareName       = 'web-data'
 var serverStorageName  = 'serverdata'
 var webStorageName     = 'webdata'
+
+// ----- Networking -----
+
+resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
+  name: vnetName
+  location: location
+  properties: {
+    addressSpace: { addressPrefixes: [ '10.0.0.0/16' ] }
+    subnets: [
+      {
+        name: subnetName
+        properties: {
+          addressPrefix: '10.0.0.0/23'
+          serviceEndpoints: [
+            { service: 'Microsoft.Storage', locations: [ location ] }
+          ]
+          delegations: [
+            {
+              name: 'aca-delegation'
+              properties: { serviceName: 'Microsoft.App/environments' }
+            }
+          ]
+          privateEndpointNetworkPolicies: 'Enabled'
+        }
+      }
+    ]
+  }
+}
+
+resource acaSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' existing = {
+  parent: vnet
+  name: subnetName
+}
 
 // ----- Log Analytics -----
 
@@ -75,17 +131,36 @@ resource logs 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
   }
 }
 
-// ----- Storage + file shares -----
+// ----- Premium FileStorage account with NFS shares -----
+//
+// Premium FileStorage requirements:
+//   - kind: FileStorage
+//   - sku.name: Premium_LRS / Premium_ZRS
+//   - Per-share minimum: 100 GiB (provisioned, not consumed)
+//
+// NFSv4.1 requirements:
+//   - supportsHttpsTrafficOnly = false
+//   - allowSharedKeyAccess can be false; NFS auth is by network only
+//   - public network access disabled; subnet allow-listed via
+//     service endpoint OR private endpoint
 
 resource storage 'Microsoft.Storage/storageAccounts@2024-01-01' = {
   name: storageAccountName
   location: location
-  kind: 'StorageV2'
-  sku: { name: 'Standard_LRS' }
+  kind: 'FileStorage'
+  sku: { name: 'Premium_LRS' }
   properties: {
-    allowSharedKeyAccess: true
+    supportsHttpsTrafficOnly: false
+    allowSharedKeyAccess: false
+    publicNetworkAccess: 'Disabled'
     minimumTlsVersion: 'TLS1_2'
-    supportsHttpsTrafficOnly: true
+    networkAcls: {
+      defaultAction: 'Deny'
+      bypass: 'AzureServices'
+      virtualNetworkRules: [
+        { id: acaSubnet.id, action: 'Allow' }
+      ]
+    }
   }
 }
 
@@ -98,8 +173,9 @@ resource serverShare 'Microsoft.Storage/storageAccounts/fileServices/shares@2024
   parent: fileServices
   name: serverShareName
   properties: {
-    shareQuota: 16
-    enabledProtocols: 'SMB'
+    enabledProtocols: 'NFS'
+    rootSquash: 'NoRootSquash'
+    shareQuota: shareSizeGiB
   }
 }
 
@@ -107,12 +183,13 @@ resource webShare 'Microsoft.Storage/storageAccounts/fileServices/shares@2024-01
   parent: fileServices
   name: webShareName
   properties: {
-    shareQuota: 4
-    enabledProtocols: 'SMB'
+    enabledProtocols: 'NFS'
+    rootSquash: 'NoRootSquash'
+    shareQuota: shareSizeGiB
   }
 }
 
-// ----- Container Apps managed environment -----
+// ----- Container Apps managed environment (VNet-integrated) -----
 
 resource env 'Microsoft.App/managedEnvironments@2024-03-01' = {
   name: envName
@@ -122,36 +199,50 @@ resource env 'Microsoft.App/managedEnvironments@2024-03-01' = {
       destination: 'log-analytics'
       logAnalyticsConfiguration: {
         customerId: logs.properties.customerId
-        sharedKey: listKeys(logs.id, '2023-09-01').primarySharedKey
+        sharedKey: logs.listKeys().primarySharedKey
       }
     }
+    vnetConfiguration: {
+      infrastructureSubnetId: acaSubnet.id
+      internal: false
+    }
+    workloadProfiles: [
+      {
+        name: 'Consumption'
+        workloadProfileType: 'Consumption'
+      }
+    ]
   }
 }
+
+// NFS file shares attach via the nfsAzureFile property — no account
+// key required; access is mediated entirely by the VNet rule on the
+// storage account.
 
 resource serverStorage 'Microsoft.App/managedEnvironments/storages@2024-03-01' = {
   parent: env
   name: serverStorageName
-  properties: {
-    azureFile: {
-      accountName: storage.name
-      accountKey: storage.listKeys().keys[0].value
-      shareName: serverShareName
+  // nfsAzureFile is valid ARM but lags in the Bicep type schema for this API
+  // version; any() bypasses the type check without affecting the deployment.
+  properties: any({
+    nfsAzureFile: {
+      server: '${storage.name}.file.${environment().suffixes.storage}'
+      shareName: '/${storage.name}/${serverShareName}'
       accessMode: 'ReadWrite'
     }
-  }
+  })
 }
 
 resource webStorage 'Microsoft.App/managedEnvironments/storages@2024-03-01' = {
   parent: env
   name: webStorageName
-  properties: {
-    azureFile: {
-      accountName: storage.name
-      accountKey: storage.listKeys().keys[0].value
-      shareName: webShareName
+  properties: any({
+    nfsAzureFile: {
+      server: '${storage.name}.file.${environment().suffixes.storage}'
+      shareName: '/${storage.name}/${webShareName}'
       accessMode: 'ReadWrite'
     }
-  }
+  })
 }
 
 // ----- Linea-server: internal ingress on 8080 -----
@@ -161,6 +252,7 @@ resource serverApp 'Microsoft.App/containerApps@2024-03-01' = {
   location: location
   properties: {
     managedEnvironmentId: env.id
+    workloadProfileName: 'Consumption'
     configuration: {
       activeRevisionsMode: 'Single'
       ingress: {
@@ -210,7 +302,7 @@ resource serverApp 'Microsoft.App/containerApps@2024-03-01' = {
       volumes: [
         {
           name: 'data'
-          storageType: 'AzureFile'
+          storageType: 'NfsAzureFile'
           storageName: serverStorageName
         }
       ]
@@ -229,6 +321,7 @@ resource webApp 'Microsoft.App/containerApps@2024-03-01' = {
   location: location
   properties: {
     managedEnvironmentId: env.id
+    workloadProfileName: 'Consumption'
     configuration: {
       activeRevisionsMode: 'Single'
       ingress: {
@@ -273,8 +366,6 @@ resource webApp 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'LINEA_OIDC_ISSUER',       value: oidcIssuer }
             { name: 'LINEA_OIDC_CLIENT_ID',    value: lineaWebClientId }
             { name: 'LINEA_OIDC_CLIENT_SECRET', secretRef: 'oidc-client-secret' }
-            // Filled in by GH Actions after first deploy (or set to placeholder
-            // and update once webApp.fqdn is known on the second deploy).
             { name: 'LINEA_OIDC_REDIRECT_URL', value: 'https://${webAppName}.${env.properties.defaultDomain}/auth/callback' }
             { name: 'LINEA_BFF_POST_LOGIN_URL', value: '/' }
           ]
@@ -290,7 +381,7 @@ resource webApp 'Microsoft.App/containerApps@2024-03-01' = {
       volumes: [
         {
           name: 'data'
-          storageType: 'AzureFile'
+          storageType: 'NfsAzureFile'
           storageName: webStorageName
         }
       ]
@@ -299,15 +390,16 @@ resource webApp 'Microsoft.App/containerApps@2024-03-01' = {
   }
   dependsOn: [
     webStorage
-    serverApp
   ]
 }
 
 // ----- Outputs -----
 
-output webUrl string         = 'https://${webApp.properties.configuration.ingress.fqdn}'
-output serverInternalUrl string = 'https://${serverApp.properties.configuration.ingress.fqdn}'
-output webAppName string     = webApp.name
-output serverAppName string  = serverApp.name
-output redirectUri string    = 'https://${webApp.properties.configuration.ingress.fqdn}/auth/callback'
-output logWorkspaceName string = logs.name
+output webUrl string             = 'https://${webApp.properties.configuration.ingress.fqdn}'
+output serverInternalUrl string  = 'https://${serverApp.properties.configuration.ingress.fqdn}'
+output webAppName string         = webApp.name
+output serverAppName string      = serverApp.name
+output redirectUri string        = 'https://${webApp.properties.configuration.ingress.fqdn}/auth/callback'
+output logWorkspaceName string   = logs.name
+output storageAccountName string = storage.name
+output vnetName string           = vnet.name
