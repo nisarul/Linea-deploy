@@ -167,6 +167,8 @@ needs the OIDC issuer + Linea-web app reg values.
 | `LINEA_WEB_CLIENT_SECRET`  | `$WEB_SECRET`                                                        |
 | `GHCR_USERNAME`            | GitHub username or org account that can pull the GHCR images         |
 | `GHCR_PAT`                 | GitHub PAT with at least `read:packages` for `ghcr.io/nisarul/*`     |
+| `GOOGLE_CLIENT_ID`         | (Optional) Google OAuth Web client id; leave empty to disable Google |
+| `GOOGLE_CLIENT_SECRET`     | (Optional) Google OAuth Web client secret                            |
 
 > Notes for private GHCR images:
 > - `Deploy infra` now passes GHCR credentials to Azure Container Apps so image pulls succeed.
@@ -182,48 +184,51 @@ needs the OIDC issuer + Linea-web app reg values.
 2. Take that URL — e.g. `https://linea-web.victoriousrock-abc123.centralindia.azurecontainerapps.io` —
    and patch the `Linea-web` app registration's reply URLs:
 
-   ```sh
-   az ad app update --id $WEB_APP \
-     --web-redirect-uris "https://<WEB_FQDN>/auth/callback"
+   ```sh\
+       "https://<WEB_FQDN>/auth/callback/microsoft" \
+       "https://<WEB_FQDN>/auth/callback"
    ```
+
+   The second URL keeps the legacy single-provider callback alive.
+
+3. Re-run **Deploy infra** so `LINEA_OIDC_REDIRECT_BASE
 
 3. Re-run **Deploy infra** so `LINEA_OIDC_REDIRECT_URL` in the Container App matches.
 
-### Add "Sign in with Google" (federate Google through Entra ID)
+### Add "Sign in with Google" (separate provider in the BFF)
 
-Linea uses a single OIDC issuer (Entra). To offer Google sign-in without
-introducing a second IdP in the app, federate Google as an external identity
-provider in your Entra tenant. Users see "Sign in with Google" on the Entra
-login page; Entra issues the ID token; the BFF and `linea-server` see no
-difference.
+Linea-web supports multiple OIDC providers in parallel. The BFF
+exposes one `/auth/login/{provider}` route per configured provider
+and the SPA renders a button per provider on `/login`. Identity
+collisions are prevented because the linea-server records each
+authenticated subject as `{issuer}|{sub}`.
 
-1. Create the Google OAuth 2.0 client.
-   - Google Cloud Console → APIs & Services → Credentials → Create credentials → OAuth client ID.
+To add Google as a second provider:
+
+1. **Create a Google OAuth 2.0 Web client.**
+   - Google Cloud Console → APIs & Services → Credentials → **+ Create credentials** → **OAuth client ID**.
    - Application type: **Web application**.
-   - Authorized JavaScript origins: `https://login.microsoftonline.com`
-   - Authorized redirect URIs:
-     `https://login.microsoftonline.com/te/<TENANT_ID>/oauth2/authresp`
-   - Copy the generated **Client ID** and **Client secret**.
+   - Authorized redirect URIs (add all of these):
+     - `https://<WEB_FQDN>/auth/callback/google`
+     - `http://localhost:8090/auth/callback/google` (only if you use the local Azure-pointed dev compose)
+   - Copy the **Client ID** and **Client secret**.
 
-2. Add Google as an identity provider in Entra.
-   - Microsoft Entra admin center → External Identities → All identity providers → + Google.
-   - Paste the Google Client ID and Client secret. Save.
+2. **Set GitHub secrets in `Linea-deploy`.**
+   ```sh
+   gh secret set GOOGLE_CLIENT_ID     --body "<google-client-id>"     --repo nisarul/Linea-deploy
+   gh secret set GOOGLE_CLIENT_SECRET --body "<google-client-secret>" --repo nisarul/Linea-deploy
+   ```
 
-3. Allow Google users to actually sign in to your app.
-   - Your Linea-web app registration → **Authentication** → ensure "Supported account types" is
-     "Accounts in any organizational directory and personal Microsoft accounts" or use a
-     **user flow** (External Identities → User flows) that includes Google.
-   - For a personal-tenant setup, you typically attach the app to a sign-up/sign-in user flow
-     and set `LINEA_OIDC_ISSUER` to the user-flow issuer URL. For a single-tenant app where
-     Google users are added as guests, no issuer change is needed.
+3. **Re-run `Deploy infra`.** When `GOOGLE_CLIENT_ID` is non-empty
+   the Bicep template enables Google on both the BFF (as a second
+   provider) and the linea-server (as a second trusted issuer).
 
-4. Test.
-   - Open `https://<WEB_FQDN>` and click sign in.
-   - On the Entra page, "Sign in with Google" appears alongside the standard sign-in.
+4. **Verify.** Open `https://<WEB_FQDN>/login` in an incognito
+   window — you'll see two buttons: "Continue with Microsoft"
+   and "Continue with Google".
 
-No app, BFF, or `linea-server` changes are required. The ID token issuer remains
-your Entra tenant (or the user-flow issuer), `aud` remains the Linea-web client id,
-and signature verification continues to use the discovery JWKS.
+If `GOOGLE_CLIENT_ID` is left empty, only Microsoft is configured
+and the existing single-provider flow is preserved.
 
 ### Subsequent deploys
 

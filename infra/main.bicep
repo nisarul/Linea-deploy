@@ -58,6 +58,13 @@ param lineaServerAudience string
 @secure()
 param lineaWebClientSecret string
 
+@description('Optional: Google OAuth client id for "Sign in with Google". Empty disables Google.')
+param googleClientId string = ''
+
+@description('Optional: Google OAuth client secret. Required when googleClientId is set.')
+@secure()
+param googleClientSecret string = ''
+
 @description('Image registry server (e.g. ghcr.io). Empty for anonymous public-image pulls.')
 param registryServer string = 'ghcr.io'
 
@@ -289,8 +296,11 @@ resource serverApp 'Microsoft.App/containerApps@2025-01-01' = {
           env: [
             { name: 'LINEA_ADDR',           value: ':8080' }
             { name: 'LINEA_DATA_DIR',       value: '/data' }
-            { name: 'LINEA_OIDC_ISSUER',    value: oidcIssuer }
-            { name: 'LINEA_OIDC_AUDIENCE',  value: lineaServerAudience }
+            // Multi-issuer support: when google is enabled, both
+            // issuers and audiences are passed as comma-separated
+            // lists, paired by index.
+            { name: 'LINEA_OIDC_ISSUER',    value: empty(googleClientId) ? oidcIssuer : '${oidcIssuer},https://accounts.google.com' }
+            { name: 'LINEA_OIDC_AUDIENCE',  value: empty(googleClientId) ? lineaServerAudience : '${lineaServerAudience},${googleClientId}' }
           ]
           volumeMounts: [
             { volumeName: 'data', mountPath: '/data' }
@@ -343,7 +353,10 @@ resource webApp 'Microsoft.App/containerApps@2025-01-01' = {
       ]
       secrets: concat(
         [
-          { name: 'oidc-client-secret', value: lineaWebClientSecret }
+          { name: 'oidc-microsoft-secret', value: lineaWebClientSecret }
+        ],
+        empty(googleClientId) ? [] : [
+          { name: 'oidc-google-secret', value: googleClientSecret }
         ],
         empty(registryPassword) ? [] : [
           { name: 'registry-password', value: registryPassword }
@@ -360,17 +373,29 @@ resource webApp 'Microsoft.App/containerApps@2025-01-01' = {
             cpu: json('0.25')
             memory: '0.5Gi'
           }
-          env: [
-            { name: 'LINEA_BFF_ADDR',          value: ':8090' }
-            { name: 'LINEA_BFF_COOKIE_SECURE', value: 'true' }
-            { name: 'LINEA_BFF_SESSION_DIR',   value: '/data/sessions' }
-            { name: 'LINEA_BFF_UPSTREAM_URL',  value: 'https://${serverApp.properties.configuration.ingress.fqdn}' }
-            { name: 'LINEA_OIDC_ISSUER',       value: oidcIssuer }
-            { name: 'LINEA_OIDC_CLIENT_ID',    value: lineaWebClientId }
-            { name: 'LINEA_OIDC_CLIENT_SECRET', secretRef: 'oidc-client-secret' }
-            { name: 'LINEA_OIDC_REDIRECT_URL', value: 'https://${webAppName}.${env.properties.defaultDomain}/auth/callback' }
-            { name: 'LINEA_BFF_POST_LOGIN_URL', value: '/' }
-          ]
+          env: concat(
+            [
+              { name: 'LINEA_BFF_ADDR',          value: ':8090' }
+              { name: 'LINEA_BFF_COOKIE_SECURE', value: 'true' }
+              { name: 'LINEA_BFF_SESSION_DIR',   value: '/data/sessions' }
+              { name: 'LINEA_BFF_UPSTREAM_URL',  value: 'https://${serverApp.properties.configuration.ingress.fqdn}' }
+              { name: 'LINEA_BFF_POST_LOGIN_URL', value: '/' }
+              // Multi-provider config: comma-separated provider list
+              // plus per-provider issuer/client/secret env vars.
+              { name: 'LINEA_OIDC_PROVIDERS', value: empty(googleClientId) ? 'microsoft' : 'microsoft,google' }
+              { name: 'LINEA_OIDC_REDIRECT_BASE', value: 'https://${webAppName}.${env.properties.defaultDomain}/auth/callback' }
+              { name: 'LINEA_OIDC_MICROSOFT_DISPLAY_NAME', value: 'Microsoft' }
+              { name: 'LINEA_OIDC_MICROSOFT_ISSUER',       value: oidcIssuer }
+              { name: 'LINEA_OIDC_MICROSOFT_CLIENT_ID',    value: lineaWebClientId }
+              { name: 'LINEA_OIDC_MICROSOFT_CLIENT_SECRET', secretRef: 'oidc-microsoft-secret' }
+            ],
+            empty(googleClientId) ? [] : [
+              { name: 'LINEA_OIDC_GOOGLE_DISPLAY_NAME', value: 'Google' }
+              { name: 'LINEA_OIDC_GOOGLE_ISSUER',       value: 'https://accounts.google.com' }
+              { name: 'LINEA_OIDC_GOOGLE_CLIENT_ID',    value: googleClientId }
+              { name: 'LINEA_OIDC_GOOGLE_CLIENT_SECRET', secretRef: 'oidc-google-secret' }
+            ]
+          )
           volumeMounts: [
             { volumeName: 'data', mountPath: '/data' }
           ]
