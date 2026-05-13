@@ -6,11 +6,11 @@ on:
       resourceGroup:
         description: "Resource group name"
         required: true
-        default: "linea-rg"
+        default: "Linea-rg"
       location:
         description: "Azure region"
         required: true
-        default: "westeurope"
+        default: "centralindia"
       lineaServerImage:
         description: "Container image for Linea-server"
         required: true

@@ -15,7 +15,7 @@ linea-vnet (10.0.0.0/16)
 └─ aca subnet (10.0.0.0/23)   delegated to Container Apps,
                               service endpoint to Microsoft.Storage
 
-resourceGroup (linea-rg)
+resourceGroup (Linea-rg)
 ├─ Log Analytics workspace
 ├─ Premium FileStorage account     public access disabled,
 │    ├─ NFSv4.1 share: server-data  subnet-restricted via service
@@ -48,8 +48,8 @@ az login
 az account set --subscription <SUBSCRIPTION_ID>
 TENANT_ID=$(az account show --query tenantId -o tsv)
 SUB_ID=$(az account show --query id -o tsv)
-RG=linea-rg
-LOC=westeurope
+RG=Linea-rg
+LOC=centralindia
 az group create -n $RG -l $LOC
 ```
 
@@ -144,7 +144,7 @@ needs the OIDC issuer + Linea-web app reg values.
 
 | Name                    | Value                                                       |
 |-------------------------|-------------------------------------------------------------|
-| `AZURE_RESOURCE_GROUP`  | `linea-rg`                                                  |
+| `AZURE_RESOURCE_GROUP`  | `Linea-rg`                                                  |
 
 **Additional secrets (Linea-deploy only)**
 
@@ -160,7 +160,7 @@ needs the OIDC issuer + Linea-web app reg values.
 
 1. Run the **Deploy infra** workflow in this repo (Actions → Deploy infra → Run workflow).
    It creates the resource group contents and prints the public URL of `linea-web`.
-2. Take that URL — e.g. `https://linea-web.victoriousrock-abc123.westeurope.azurecontainerapps.io` —
+2. Take that URL — e.g. `https://linea-web.victoriousrock-abc123.centralindia.azurecontainerapps.io` —
    and patch the `Linea-web` app registration's reply URLs:
 
    ```sh
@@ -190,12 +190,12 @@ az bicep build --file infra/main.bicep
 
 # 2. What-if before applying
 az deployment group what-if \
-  --resource-group linea-rg \
+  --resource-group Linea-rg \
   --template-file infra/main.bicep \
   --parameters @infra/main.parameters.json
 ```
 
-## Cost (rough, eu-west, 2026 pricing)
+## Cost (rough, central-india, 2026 pricing)
 
 - Container Apps (2 single-replica apps, Consumption profile): ~$15-25 / month at idle.
 - Premium FileStorage (LRS, 2 × 100 GiB provisioned): ~$32 / month.
