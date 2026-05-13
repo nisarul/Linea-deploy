@@ -1,0 +1,16 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "namePrefix":          { "value": "linea" },
+    "lineaServerImage":    { "value": "ghcr.io/nisarul/linea-server:v0.2.0" },
+    "lineaWebImage":       { "value": "ghcr.io/nisarul/linea-web:v1.0.0" },
+    "oidcIssuer":          { "value": "https://login.microsoftonline.com/<TENANT_ID>/v2.0" },
+    "lineaWebClientId":    { "value": "<LINEA_WEB_APP_REG_CLIENT_ID>" },
+    "lineaServerAudience": { "value": "<LINEA_WEB_APP_REG_CLIENT_ID>" },
+    "lineaWebClientSecret": { "value": "<SET_BY_PIPELINE>" },
+    "registryServer":      { "value": "ghcr.io" },
+    "registryUsername":    { "value": "" },
+    "registryPassword":    { "value": "" }
+  }
+}

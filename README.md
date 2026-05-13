@@ -1,0 +1,201 @@
+# Linea Deploy
+
+Azure infrastructure + GitHub CD pipelines for the Linea ecosystem.
+
+> Production deployment of [Linea-server](https://github.com/nisarul/Linea-server)
+> + [Linea-web](https://github.com/nisarul/Linea-web), authenticated by
+> [Microsoft Entra ID](https://entra.microsoft.com), hosted on
+> [Azure Container Apps](https://learn.microsoft.com/azure/container-apps/), driven by
+> tag-triggered GitHub Actions with OIDC federated credentials (no long-lived secrets).
+
+## Topology
+
+```
+resourceGroup (linea-rg)
+├─ Log Analytics workspace
+├─ Storage account
+│    ├─ file share: server-data  → Linea-server BadgerDB
+│    └─ file share: web-data     → Linea-web BFF sessions
+└─ Container Apps managed env
+   ├─ linea-server  internal ingress :8080   (single replica)
+   └─ linea-web     external ingress :8090   (single replica)
+```
+
+- **Single replica per app.** Both apps are stateful: Linea-server keeps a Badger KV per
+  genealogy; the Linea-web BFF keeps a Badger session store.
+- **Internal traffic.** linea-web's BFF reverse-proxies `/api/*` to `linea-server`'s
+  internal Container Apps FQDN — never goes out to the public internet.
+- **Public URL.** Azure's default `<app>.<env>.azurecontainerapps.io` for now. A custom
+  domain + Front Door can be added later without changing the topology.
+
+## One-time setup (manual)
+
+These steps run **once** per environment, before the first `Deploy infra` workflow run.
+They cover Entra ID app registrations (for end-user sign-in) and the GitHub OIDC
+federated credential (for CI to deploy without a stored secret).
+
+### 1. Azure subscription context
+
+```sh
+az login
+az account set --subscription <SUBSCRIPTION_ID>
+TENANT_ID=$(az account show --query tenantId -o tsv)
+SUB_ID=$(az account show --query id -o tsv)
+RG=linea-rg
+LOC=westeurope
+az group create -n $RG -l $LOC
+```
+
+### 2. Entra ID app registration for Linea-web (BFF)
+
+Confidential client; the BFF holds the secret.
+
+```sh
+# Placeholder redirect — we'll patch it after the first infra deploy
+# when we know the Container App's public FQDN.
+WEB_APP=$(az ad app create \
+  --display-name "Linea-web" \
+  --sign-in-audience AzureADMyOrg \
+  --web-redirect-uris "https://localhost/auth/callback" \
+  --query appId -o tsv)
+
+WEB_SECRET=$(az ad app credential reset --id $WEB_APP --append --years 2 --query password -o tsv)
+
+echo "LINEA_WEB_CLIENT_ID=$WEB_APP"
+echo "LINEA_WEB_CLIENT_SECRET=$WEB_SECRET"
+```
+
+### 3. Entra ID app registration for Linea-cli (public)
+
+```sh
+CLI_APP=$(az ad app create \
+  --display-name "Linea-cli" \
+  --sign-in-audience AzureADMyOrg \
+  --is-fallback-public-client true \
+  --public-client-redirect-uris "http://localhost" \
+  --query appId -o tsv)
+
+echo "LINEA_CLI_CLIENT_ID=$CLI_APP"
+```
+
+### 4. Service principal + federated credentials for GitHub Actions
+
+```sh
+SP_APP=$(az ad app create --display-name "linea-deploy-gh" --query appId -o tsv)
+az ad sp create --id $SP_APP > /dev/null
+SP_OBJECT=$(az ad sp show --id $SP_APP --query id -o tsv)
+
+# Grant Contributor on the resource group only.
+az role assignment create \
+  --assignee-object-id $SP_OBJECT \
+  --assignee-principal-type ServicePrincipal \
+  --role Contributor \
+  --scope /subscriptions/$SUB_ID/resourceGroups/$RG
+
+# Federated credential for each repo + ref. Repeat for each repo.
+for repo in nisarul/Linea-deploy nisarul/Linea-server nisarul/Linea-web; do
+  az ad app federated-credential create --id $SP_APP --parameters @- <<EOF
+{
+  "name": "${repo//\//-}-main",
+  "issuer": "https://token.actions.githubusercontent.com",
+  "subject": "repo:$repo:ref:refs/heads/main",
+  "audiences": ["api://AzureADTokenExchange"]
+}
+EOF
+
+  # Also federate for tag pushes (so the Release workflows can deploy).
+  az ad app federated-credential create --id $SP_APP --parameters @- <<EOF
+{
+  "name": "${repo//\//-}-tags",
+  "issuer": "https://token.actions.githubusercontent.com",
+  "subject": "repo:$repo:ref:refs/tags/*",
+  "audiences": ["api://AzureADTokenExchange"]
+}
+EOF
+done
+
+echo "AZURE_CLIENT_ID=$SP_APP"
+echo "AZURE_TENANT_ID=$TENANT_ID"
+echo "AZURE_SUBSCRIPTION_ID=$SUB_ID"
+```
+
+### 5. GitHub secrets / variables
+
+Set these on **each of** `Linea-deploy`, `Linea-server`, `Linea-web` (under
+Settings → Secrets and variables → Actions). The `Linea-deploy` repo additionally
+needs the OIDC issuer + Linea-web app reg values.
+
+**Repository secrets (all three repos)**
+
+| Name                    | Value                                                       |
+|-------------------------|-------------------------------------------------------------|
+| `AZURE_CLIENT_ID`       | `$SP_APP` from step 4                                       |
+| `AZURE_TENANT_ID`       | `$TENANT_ID`                                                |
+| `AZURE_SUBSCRIPTION_ID` | `$SUB_ID`                                                   |
+
+**Repository variables (all three repos)**
+
+| Name                    | Value                                                       |
+|-------------------------|-------------------------------------------------------------|
+| `AZURE_RESOURCE_GROUP`  | `linea-rg`                                                  |
+
+**Additional secrets (Linea-deploy only)**
+
+| Name                       | Value                                                                |
+|----------------------------|----------------------------------------------------------------------|
+| `OIDC_ISSUER`              | `https://login.microsoftonline.com/<TENANT_ID>/v2.0`                 |
+| `LINEA_WEB_CLIENT_ID`      | `$WEB_APP`                                                           |
+| `LINEA_WEB_CLIENT_SECRET`  | `$WEB_SECRET`                                                        |
+
+## Deployment
+
+### First deploy
+
+1. Run the **Deploy infra** workflow in this repo (Actions → Deploy infra → Run workflow).
+   It creates the resource group contents and prints the public URL of `linea-web`.
+2. Take that URL — e.g. `https://linea-web.victoriousrock-abc123.westeurope.azurecontainerapps.io` —
+   and patch the `Linea-web` app registration's reply URLs:
+
+   ```sh
+   az ad app update --id $WEB_APP \
+     --web-redirect-uris "https://<WEB_FQDN>/auth/callback"
+   ```
+
+3. Re-run **Deploy infra** so `LINEA_OIDC_REDIRECT_URL` in the Container App matches.
+
+### Subsequent deploys
+
+- Pushing a `v*.*.*` tag to `Linea-server` builds + pushes the image to GHCR and runs
+  `az containerapp update --image ghcr.io/nisarul/linea-server:<tag>` against the
+  `linea-server` Container App.
+- Pushing a `v*.*.*` tag to `Linea-web` does the same for `linea-web`.
+
+Both repos' `release.yml` workflows are wired to:
+- build with Buildx, push to `ghcr.io/<owner>/<repo>`,
+- log in to Azure via OIDC (no static creds),
+- `az containerapp update --image` to flip the running revision.
+
+## Validation
+
+```sh
+# 1. Bicep compiles
+az bicep build --file infra/main.bicep
+
+# 2. What-if before applying
+az deployment group what-if \
+  --resource-group linea-rg \
+  --template-file infra/main.bicep \
+  --parameters @infra/main.parameters.json
+```
+
+## Cost (rough, eu-west, 2026 pricing)
+
+- Container Apps (2 single-replica apps, Consumption profile): ~$15-25 / month at idle.
+- Storage (Standard LRS, ~20 GB files): ~$1 / month.
+- Log Analytics (light traffic): ~$2-5 / month.
+
+≈ **$20-30 / month** for a quiet personal deployment.
+
+## License
+
+AGPL-3.0-or-later.

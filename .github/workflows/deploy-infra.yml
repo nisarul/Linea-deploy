@@ -1,0 +1,67 @@
+name: Deploy infra
+
+on:
+  workflow_dispatch:
+    inputs:
+      resourceGroup:
+        description: "Resource group name"
+        required: true
+        default: "linea-rg"
+      location:
+        description: "Azure region"
+        required: true
+        default: "westeurope"
+      lineaServerImage:
+        description: "Container image for Linea-server"
+        required: true
+        default: "ghcr.io/nisarul/linea-server:v0.2.0"
+      lineaWebImage:
+        description: "Container image for Linea-web"
+        required: true
+        default: "ghcr.io/nisarul/linea-web:v1.0.0"
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: prod
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: azure/login@v2
+        with:
+          client-id:       ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id:       ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Ensure resource group
+        run: |
+          az group create \
+            --name "${{ inputs.resourceGroup }}" \
+            --location "${{ inputs.location }}"
+
+      - name: Deploy Bicep
+        uses: azure/arm-deploy@v2
+        with:
+          scope: resourcegroup
+          resourceGroupName: ${{ inputs.resourceGroup }}
+          template: infra/main.bicep
+          parameters: >-
+            namePrefix=linea
+            lineaServerImage=${{ inputs.lineaServerImage }}
+            lineaWebImage=${{ inputs.lineaWebImage }}
+            oidcIssuer=${{ secrets.OIDC_ISSUER }}
+            lineaWebClientId=${{ secrets.LINEA_WEB_CLIENT_ID }}
+            lineaServerAudience=${{ secrets.LINEA_WEB_CLIENT_ID }}
+            lineaWebClientSecret=${{ secrets.LINEA_WEB_CLIENT_SECRET }}
+          failOnStdErr: false
+
+      - name: Show outputs
+        run: |
+          az deployment group show \
+            --resource-group "${{ inputs.resourceGroup }}" \
+            --name main \
+            --query 'properties.outputs' -o table
