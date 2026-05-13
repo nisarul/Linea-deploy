@@ -57,6 +57,9 @@ jobs:
             lineaWebClientId=${{ secrets.LINEA_WEB_CLIENT_ID }}
             lineaServerAudience=${{ secrets.LINEA_WEB_CLIENT_ID }}
             lineaWebClientSecret=${{ secrets.LINEA_WEB_CLIENT_SECRET }}
+            registryServer=ghcr.io
+            registryUsername=${{ secrets.GHCR_USERNAME }}
+            registryPassword=${{ secrets.GHCR_PAT }}
           failOnStdErr: false
 
       - name: Show outputs

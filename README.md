@@ -165,6 +165,12 @@ needs the OIDC issuer + Linea-web app reg values.
 | `OIDC_ISSUER`              | `https://login.microsoftonline.com/<TENANT_ID>/v2.0`                 |
 | `LINEA_WEB_CLIENT_ID`      | `$WEB_APP`                                                           |
 | `LINEA_WEB_CLIENT_SECRET`  | `$WEB_SECRET`                                                        |
+| `GHCR_USERNAME`            | GitHub username or org account that can pull the GHCR images         |
+| `GHCR_PAT`                 | GitHub PAT with at least `read:packages` for `ghcr.io/nisarul/*`     |
+
+> Notes for private GHCR images:
+> - `Deploy infra` now passes GHCR credentials to Azure Container Apps so image pulls succeed.
+> - If images are public, you can leave `GHCR_USERNAME` and `GHCR_PAT` empty.
 
 ## Deployment
 
@@ -172,6 +178,7 @@ needs the OIDC issuer + Linea-web app reg values.
 
 1. Run the **Deploy infra** workflow in this repo (Actions → Deploy infra → Run workflow).
    It creates the resource group contents and prints the public URL of `linea-web`.
+  If your GHCR images are private, set `GHCR_USERNAME` and `GHCR_PAT` in this repo first.
 2. Take that URL — e.g. `https://linea-web.victoriousrock-abc123.centralindia.azurecontainerapps.io` —
    and patch the `Linea-web` app registration's reply URLs:
 
