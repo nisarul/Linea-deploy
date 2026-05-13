@@ -19,6 +19,11 @@ on:
         description: "Container image for Linea-web"
         required: true
         default: "ghcr.io/nisarul/linea-web:v1.0.0"
+      serverExternalIngress:
+        description: "Expose linea-server externally (for local BFF dev). Still token-gated."
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   id-token: write
@@ -60,6 +65,7 @@ jobs:
             registryServer=ghcr.io
             registryUsername=${{ secrets.GHCR_USERNAME }}
             registryPassword=${{ secrets.GHCR_PAT }}
+            serverExternalIngress=${{ inputs.serverExternalIngress }}
           failOnStdErr: false
 
       - name: Show outputs

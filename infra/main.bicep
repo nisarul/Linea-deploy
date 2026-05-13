@@ -73,6 +73,9 @@ param registryPassword string = ''
 @maxValue(102400)
 param shareSizeGiB int = 100
 
+@description('Expose linea-server with external ingress (still requires a valid OIDC bearer token). Useful for local BFF dev pointing at the Azure server.')
+param serverExternalIngress bool = false
+
 // ----- Names -----
 
 var storageAccountName = toLower(replace('${namePrefix}st${uniqueString(resourceGroup().id)}', '-', ''))
@@ -254,7 +257,7 @@ resource serverApp 'Microsoft.App/containerApps@2025-01-01' = {
     configuration: {
       activeRevisionsMode: 'Single'
       ingress: {
-        external: false
+        external: serverExternalIngress
         targetPort: 8080
         transport: 'http'
         traffic: [
