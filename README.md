@@ -119,6 +119,18 @@ EOF
   "audiences": ["api://AzureADTokenExchange"]
 }
 EOF
+
+  # And for the "prod" GitHub Environment used by the deploy jobs.
+  # GitHub mints tokens with this subject when a job declares
+  # `environment: prod`, regardless of the ref.
+  az ad app federated-credential create --id $SP_APP --parameters @- <<EOF
+{
+  "name": "${repo//\//-}-env-prod",
+  "issuer": "https://token.actions.githubusercontent.com",
+  "subject": "repo:$repo:environment:prod",
+  "audiences": ["api://AzureADTokenExchange"]
+}
+EOF
 done
 
 echo "AZURE_CLIENT_ID=$SP_APP"
